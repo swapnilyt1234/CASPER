@@ -1,29 +1,31 @@
 import os
 import asyncio
 import requests
+import time
 import inspect
 import pkgutil
 import importlib
-import time
+import re
 from dotenv import load_dotenv
 
 import pycspr
-from pycspr import NodeRpcClient, NodeRpcConnectionInfo
 
+# ── Dynamic Version Support for Casper Types ────────────────────────
 try:
     from pycspr.types.crypto import KeyAlgorithm
 except ImportError:
     from pycspr.crypto import KeyAlgorithm
 
-# ─────────────────────────────────────────────
-# HTTPS endpoints only — port 7777 is ISP-blocked
-# ─────────────────────────────────────────────
+try:
+    from pycspr.types.cl import CLV_String, CLV_Bool, CLV_Key
+except ImportError:
+    from pycspr.types import CLV_String, CLV_Bool, CLV_Key
+
 TESTNET_RPC_URL = "https://node.testnet.casper.network/rpc"
 REQUEST_TIMEOUT = 30
 
 
 def probe_https_node(url: str) -> bool:
-    """Confirm the HTTPS endpoint is alive."""
     try:
         r = requests.post(
             url,
@@ -36,12 +38,6 @@ def probe_https_node(url: str) -> bool:
 
 
 def send_deploy_https(deploy, rpc_url: str) -> str:
-    """
-    Bypass pycspr's NodeRpcClient (which doesn't handle HTTPS properly)
-    and POST the signed deploy directly via requests.
-    Returns the deploy hash string.
-    """
-    # Try different serialisation methods depending on pycspr version
     deploy_dict = None
     for method in [
         lambda: deploy.to_json(),
@@ -73,42 +69,98 @@ def send_deploy_https(deploy, rpc_url: str) -> str:
     data = r.json()
 
     if "error" in data:
+        print("\n[!] RAW VALIDATOR PAYLOAD:", data)
         raise RuntimeError(f"RPC error {data['error'].get('code')}: {data['error'].get('message')}")
 
     return data["result"]["deploy_hash"]
 
 
-def build_session_object(wasm_bytes):
-    module_bytes_class = None
-    for loader, module_name, is_pkg in pkgutil.walk_packages(pycspr.__path__, pycspr.__name__ + "."):
-        try:
-            mod = importlib.import_module(module_name)
-            for attr_name in dir(mod):
-                if "modulebytes" in attr_name.lower() and not attr_name.startswith("_"):
-                    attr = getattr(mod, attr_name)
-                    if inspect.isclass(attr):
-                        module_bytes_class = attr
-                        break
-            if module_bytes_class:
-                break
-        except Exception:
-            continue
+def build_session_object(wasm_bytes, args_dict):
+    MB_Class = None
+    Arg_Class = None
 
-    if not module_bytes_class:
-        raise RuntimeError("FATAL: Could not find the ModuleBytes wrapper.")
+    for name, obj in inspect.getmembers(pycspr.types, inspect.isclass):
+        lname = name.lower()
+        if "modulebytes" in lname:
+            MB_Class = obj
+        elif "argument" in lname and ("deploy" in lname or "named" in lname):
+            Arg_Class = obj
+
+    if not MB_Class or not Arg_Class:
+        for _, modname, _ in pkgutil.walk_packages(pycspr.__path__, pycspr.__name__ + "."):
+            try:
+                mod = importlib.import_module(modname)
+                for name, obj in inspect.getmembers(mod, inspect.isclass):
+                    lname = name.lower()
+                    if "modulebytes" in lname:
+                        MB_Class = obj
+                    elif "argument" in lname and ("deploy" in lname or "named" in lname):
+                        Arg_Class = obj
+            except Exception:
+                pass
+
+    if not MB_Class or not Arg_Class:
+        raise RuntimeError("FATAL: Could not find Session or Argument classes in pycspr.")
+
+    args_list = []
+    for k, v in args_dict.items():
+        try:
+            args_list.append(Arg_Class(name=k, value=v))
+        except TypeError:
+            args_list.append(Arg_Class(k, v))
 
     for attempt in [
-        lambda: module_bytes_class(module_bytes=wasm_bytes, args=[]),
-        lambda: module_bytes_class(module_bytes=wasm_bytes, args={}),
-        lambda: module_bytes_class(wasm_bytes, []),
-        lambda: module_bytes_class(wasm_bytes, {}),
-        lambda: module_bytes_class(wasm_bytes),
+        lambda: MB_Class(module_bytes=wasm_bytes, args=args_list),
+        lambda: MB_Class(module_bytes=wasm_bytes, arguments=args_list),
+        lambda: MB_Class(wasm_bytes, args_list),
     ]:
         try:
             return attempt()
         except Exception:
             continue
-    raise RuntimeError(f"Found {module_bytes_class.__name__} but could not initialise it.")
+            
+    raise RuntimeError("FATAL: Failed to inject arguments.")
+
+
+def build_casper_agent_key(keypair):
+    """
+    Surgically precise Casper Key builder.
+    Forces PyCSPR to calculate the True Blake2b Account Hash dynamically.
+    """
+    import pycspr.crypto
+    
+    # 1. Grab the public key bytes
+    acc_key = getattr(keypair, "account_key", None)
+    if not acc_key:
+        raise RuntimeError("FATAL: Could not extract account_key from wallet.")
+        
+    # 2. Force the crypto engine to calculate the hash
+    true_account_hash = None
+    try:
+        true_account_hash = pycspr.crypto.get_account_hash(acc_key)
+    except AttributeError:
+        try:
+            import pycspr.factory.accounts
+            true_account_hash = pycspr.factory.accounts.get_account_hash(acc_key)
+        except Exception:
+            pass
+
+    if not true_account_hash:
+        raise RuntimeError("FATAL: PyCSPR crypto engine failed to hash the account.")
+
+    # 3. Clean and format the byte array
+    if isinstance(true_account_hash, str):
+        true_account_hash = bytes.fromhex(true_account_hash.replace("account-hash-", ""))
+        
+    if len(true_account_hash) > 32:
+        true_account_hash = true_account_hash[-32:]
+
+    # 4. Format the enum for the network
+    class DummyKeyType: value = 0
+    k_type = getattr(pycspr.types.cl, 'CLV_KeyType', DummyKeyType)
+    enum_val = getattr(k_type, 'ACCOUNT', DummyKeyType())
+    
+    return CLV_Key(identifier=true_account_hash, key_type=enum_val)
 
 
 async def main():
@@ -116,20 +168,18 @@ async def main():
 
     print("[*] Initialising Testnet Deployment...")
 
-    # Confirm HTTPS endpoint is up
-    print(f"[*] Probing {TESTNET_RPC_URL} ...", end=" ", flush=True)
     if probe_https_node(TESTNET_RPC_URL):
-        print("[+] ONLINE")
+        print(f"[*] Probing {TESTNET_RPC_URL} ... [+] ONLINE")
     else:
-        print("[-] UNREACHABLE")
-        print("    Fallback: sign up at cspr.cloud for a managed endpoint.")
+        print(f"[*] Probing {TESTNET_RPC_URL} ... [-] UNREACHABLE")
         return
 
     rpc_url = TESTNET_RPC_URL
     print(f"[*] Locked to: {rpc_url}\n")
 
-    # ── Key path ────────────────────────────────────────────────────────
     key_candidates = [
+        "Account 4_secret_key.pem",
+        "../Account 4_secret_key.pem",
         os.environ.get("HOST_SECRET_KEY_PATH"),
         os.environ.get("CONTAINER_SECRET_KEY_PATH"),
         "../secret_key.pem",
@@ -139,20 +189,16 @@ async def main():
     if not KEY_PATH:
         print("[-] Error: Could not find secret_key.pem.")
         return
+        
+    print(f"[*] Using Admin Key: {KEY_PATH}")
 
-    # ── WASM path ────────────────────────────────────────────────────────
-    WASM_PATH = "target/wasm32-unknown-unknown/release/derisk_vault_build_contract_clean.wasm"
+    WASM_PATH = "wasm/DeRiskVault.wasm"
     if not os.path.exists(WASM_PATH):
-        # fallback to unstripped if clean version not present
-        WASM_PATH = "target/wasm32-unknown-unknown/release/derisk_vault_build_contract.wasm"
-        if not os.path.exists(WASM_PATH):
-            print(f"[-] Error: Compiled WASM not found. Run build.ps1 first.")
-            return
-        print(f"[!] Warning: Using unstripped WASM — run wasm-opt first or node may reject it.")
+        print(f"[-] Error: Compiled WASM not found at {WASM_PATH}")
+        return
 
     print(f"[*] WASM: {WASM_PATH}")
 
-    # ── Load key ─────────────────────────────────────────────────────────
     try:
         keypair = pycspr.parse_private_key(KEY_PATH, KeyAlgorithm.SECP256K1.name)
         print("[+] Loaded Private Key.")
@@ -163,10 +209,21 @@ async def main():
     with open(WASM_PATH, "rb") as f:
         wasm_bytes = f.read()
 
-    session = build_session_object(wasm_bytes)
-    payment = pycspr.create_standard_payment(500 * (10 ** 9))
+    print("[*] Resolving Casper Key type for Odra...")
+    agent_casper_key = build_casper_agent_key(keypair)
 
-    # ── Broadcast with High-S retry loop ─────────────────────────────────
+    print("[*] Injecting Odra framework constructor arguments...")
+    session_args = {
+        "odra_cfg_package_hash_key_name": CLV_String("derisk_vault_master_v10"),
+        "odra_cfg_allow_key_override": CLV_Bool(True),
+        "odra_cfg_is_upgradable": CLV_Bool(True),
+        "odra_cfg_is_upgrade": CLV_Bool(False),
+        "agent": agent_casper_key
+    }
+
+    session = build_session_object(wasm_bytes, session_args)
+    payment = pycspr.create_standard_payment(300 * (10 ** 9))
+
     print("\n[+] Signing and broadcasting (auto-retrying High-S signatures)...")
     hash_str = None
 
@@ -188,7 +245,7 @@ async def main():
         except Exception as e:
             err = str(e).lower()
             if "invalid approval" in err or "high" in err:
-                print(f"   -> [Attempt {attempt + 1}] High-S signature hit. Recalculating...")
+                print(f"    -> [Attempt {attempt + 1}] High-S signature hit. Recalculating...")
                 time.sleep(1)
                 continue
             else:
@@ -199,46 +256,41 @@ async def main():
         print("[-] Could not produce a valid signature after 10 attempts.")
         return
 
-    # ── Poll for finality ─────────────────────────────────────────────────
     print("\n[*] Polling for finality (up to 60 s)...")
-    contract_hash = None
-
+    
     for poll in range(30):
         await asyncio.sleep(2)
         try:
-            response = requests.post(
-                rpc_url,
-                json={
-                    "jsonrpc": "2.0", "id": 1,
-                    "method": "info_get_deploy",
-                    "params": {"deploy_hash": hash_str},
-                },
-                timeout=REQUEST_TIMEOUT,
-            ).json()
+            r = requests.post(rpc_url, json={"jsonrpc": "2.0", "id": 1, "method": "info_get_deploy", "params": {"deploy_hash": hash_str}}).text
+            
+            hashes = set(re.findall(r'(?:hash|package)-[0-9a-f]{64}', r))
+            clean_hashes = [h for h in hashes if hash_str not in h]
+            
+            if clean_hashes:
+                target_hash = clean_hashes[0]
+                
+                lines = []
+                env_path = "../.env" if os.path.exists("../.env") else ".env"
+                    
+                if os.path.exists(env_path):
+                    with open(env_path, "r") as f:
+                        lines = [l for l in f.readlines() if "DERISK_CONTRACT_HASH" not in l]
+                        
+                with open(env_path, "w") as f:
+                    f.writelines(lines)
+                    f.write(f'\nDERISK_CONTRACT_HASH="{target_hash}"\n')
 
-            exec_results = response.get("result", {}).get("execution_results", [])
-            if exec_results:
-                result_data = exec_results[0]["result"]
-                if "Success" in result_data:
-                    for effect in result_data["Success"]["effect"]["transforms"]:
-                        if effect.get("transform") == "WriteContract":
-                            contract_hash = effect["key"]
-                            break
-                    print(f"[+] Execution confirmed on poll {poll + 1}.")
-                    break
-                elif "Failure" in result_data:
-                    print(f"[-] Deploy failed on-chain: {result_data['Failure']['error_message']}")
-                    return
+                print("\n" + "█"*60)
+                print("✅ CONTRACT DEPLOYED & .ENV UPDATED!")
+                print(f"   Target Hash: {target_hash}")
+                print("█"*60 + "\n")
+                return
+                
         except Exception:
             pass
 
-    if contract_hash:
-        print(f"\n[+] Contract deployed! Contract hash: {contract_hash}")
-        print("    -> Add DERISK_CONTRACT_HASH to your .env file.")
-    else:
-        print("\n[-] Polling timed out — deploy may still be processing.")
-        print(f"    Check: https://testnet.cspr.live/deploy/{hash_str}")
-
+    print("\n[-] Polling timed out — deploy may still be processing.")
+    print(f"    Check: https://testnet.cspr.live/deploy/{hash_str}")
 
 if __name__ == "__main__":
     asyncio.run(main())

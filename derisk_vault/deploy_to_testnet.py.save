@@ -1,0 +1,119 @@
+import os
+import time
+import requests
+import inspect
+import pkgutil
+import importlib
+import pycspr
+
+# ── Dynamic Version Support ──
+try:
+    from pycspr.types.crypto import KeyAlgorithm
+except ImportError:
+    from pycspr.crypto import KeyAlgorithm
+
+try:
+    from pycspr.types.cl import CLV_String, CLV_Bool, CLV_Key
+except ImportError:
+    from pycspr.types import CLV_String, CLV_Bool, CLV_Key
+
+RPC_URL = "https://node.testnet.casper.network/rpc"
+
+def build_session_object(wasm_bytes, args_dict):
+    MB_Class, Arg_Class = None, None
+    for name, obj in inspect.getmembers(pycspr.types, inspect.isclass):
+        lname = name.lower()
+        if "modulebytes" in lname: MB_Class = obj
+        elif "argument" in lname and ("deploy" in lname or "named" in lname): Arg_Class = obj
+
+    if not MB_Class or not Arg_Class:
+        for _, modname, _ in pkgutil.walk_packages(pycspr.__path__, pycspr.__name__ + "."):
+            try:
+                mod = importlib.import_module(modname)
+                for name, obj in inspect.getmembers(mod, inspect.isclass):
+                    lname = name.lower()
+                    if "modulebytes" in lname: MB_Class = obj
+                    elif "argument" in lname and ("deploy" in lname or "named" in lname): Arg_Class = obj
+            except Exception: pass
+
+    args_list = []
+    for k, v in args_dict.items():
+        try: args_list.append(Arg_Class(name=k, value=v))
+        except TypeError: args_list.append(Arg_Class(k, v))
+
+    for attempt in [
+        lambda: MB_Class(module_bytes=wasm_bytes, args=args_list),
+        lambda: MB_Class(module_bytes=wasm_bytes, arguments=args_list),
+        lambda: MB_Class(wasm_bytes, args_list),
+    ]:
+        try: return attempt()
+        except Exception: continue
+    raise RuntimeError("FATAL: Failed to inject arguments.")
+
+def main():
+    print("\n[*] INITIATING NUCLEAR DEPLOYMENT (400 CSPR)...")
+    
+    key_candidates = ["../secret_key.pem", "secret_key.pem"]
+    KEY_PATH = next((p for p in key_candidates if p and os.path.exists(p)), None)
+    if not KEY_PATH: return print("[-] Missing secret_key.pem")
+
+    keypair = pycspr.parse_private_key(KEY_PATH, KeyAlgorithm.SECP256K1.name)
+    
+    raw_key = getattr(keypair, "account_key", getattr(keypair, "account_hash", None))
+    acc_hash = raw_key[-32:] if isinstance(raw_key, bytes) and len(raw_key) > 32 else raw_key
+    agent_casper_key = CLV_Key(identifier=acc_hash, key_type=type('Dummy', (), {'value': 0})())
+
+    with open("wasm/DeRiskVault.wasm", "rb") as f:
+        wasm_bytes = f.read()
+
+    session_args = {
+        "odra_cfg_package_hash_key_name": CLV_String("derisk_vault_final_v3"),
+        "odra_cfg_allow_key_override": CLV_Bool(True),
+        "odra_cfg_is_upgradable": CLV_Bool(True),
+        "agent": agent_casper_key
+    }
+
+    session = build_session_object(wasm_bytes, session_args)
+    payment = pycspr.create_standard_payment(400 * (10 ** 9))
+    deploy_params = pycspr.create_deploy_parameters(account=keypair, chain_name="casper-test")
+    
+    deploy = pycspr.create_deploy(deploy_params, payment, session)
+    deploy.approve(keypair)
+
+    # Broadcast
+    deploy_dict = next((m() for m in [lambda: deploy.to_json(), lambda: pycspr.serialisation.to_json(deploy), lambda: pycspr.serializer.to_json(deploy)] if (lambda: True)()), None)
+    
+    payload = {"jsonrpc": "2.0", "id": 1, "method": "account_put_deploy", "params": {"deploy": deploy_dict}}
+    res = requests.post(RPC_URL, json=payload).json()
+    
+    if "error" in res:
+        return print(f"[-] Node rejected deploy: {res['error']}")
+        
+    d_hash = res["result"]["deploy_hash"]
+    print(f"[+] DEPLOY SENT! Hash: {d_hash}")
+    print("[*] Waiting 45 seconds for network finality. DO NOT CLOSE THIS WINDOW...")
+    time.sleep(45)
+    
+    # Force Fetch Hash
+    print("[*] Fetching final Contract Hash...")
+    status = requests.post(RPC_URL, json={
+        "jsonrpc": "2.0", "id": 1, "method": "info_get_deploy", "params": {"deploy_hash": d_hash}
+    }).json()
+    
+    try:
+        results = status["result"]["execution_results"][0]["result"]
+        if "Failure" in results:
+            return print(f"\n[-] DEPLOY FAILED ON-CHAIN: {results['Failure']['error_message']}")
+            
+        for effect in results["Success"]["effect"]["transforms"]:
+            if effect.get("transform") == "WriteContract":
+                print("\n" + "█"*60)
+                print("✅ DEPLOYMENT 100% SUCCESSFUL!")
+                print(f"YOUR HASH IS: {effect['key']}")
+                print("█"*60 + "\n")
+                return
+    except Exception as e:
+        print(f"[-] Could not parse finality yet. Check explorer for: {d_hash}")
+
+if __name__ == "__main__":
+    main()
