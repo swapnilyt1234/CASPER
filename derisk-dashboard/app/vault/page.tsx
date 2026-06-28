@@ -7,6 +7,7 @@ import { Header } from '@/app/components/dashboard/Header';
 import { StatusCards } from '@/app/components/dashboard/StatusCards';
 import { VaultForm } from '@/app/components/dashboard/VaultForm';
 import { SentinelFeed } from '@/app/components/dashboard/SentinelFeed';
+import { CLPublicKey, DeployUtil, RuntimeArgs, CLValueBuilder, decodeBase16, CasperClient } from 'casper-js-sdk';
 
 const REFRESH_SECONDS = 10;
 
@@ -121,9 +122,6 @@ export default function VaultDashboard() {
   const handleDeposit = async (amount: number): Promise<string> => {
     if (!walletAddress) throw new Error('Wallet not connected');
 
-    const CasperSDK = await import('casper-js-sdk');
-    const { CLPublicKey, DeployUtil, RuntimeArgs, CLValueBuilder, decodeBase16 } = CasperSDK;
-
     const provider = (window as any).CasperWalletProvider();
     const senderKey = CLPublicKey.fromHex(walletAddress);
 
@@ -177,7 +175,7 @@ export default function VaultDashboard() {
       throw new Error('Unrecognized signature format from Casper Wallet.');
     }
 
-    const client = new CasperSDK.CasperClient('/api/rpc');
+    const client = new CasperClient('/api/rpc');
     const txHash = await client.putDeploy(signedDeploy);
     const hashStr =
       typeof txHash === 'string' ? txHash : (txHash as any).toString();
