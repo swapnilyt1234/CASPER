@@ -7,7 +7,8 @@ import { Header } from '@/app/components/dashboard/Header';
 import { StatusCards } from '@/app/components/dashboard/StatusCards';
 import { VaultForm } from '@/app/components/dashboard/VaultForm';
 import { SentinelFeed } from '@/app/components/dashboard/SentinelFeed';
-import { CLPublicKey, DeployUtil, RuntimeArgs, CLValueBuilder, decodeBase16, CasperClient } from 'casper-js-sdk';
+import CasperSDK from 'casper-js-sdk';
+const { CLPublicKey, DeployUtil, RuntimeArgs, CLValueBuilder, decodeBase16, CasperClient } = CasperSDK;
 
 const REFRESH_SECONDS = 10;
 
