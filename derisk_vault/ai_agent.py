@@ -3,7 +3,9 @@ import asyncio
 import requests
 import time
 import re
+import threading
 from dotenv import load_dotenv
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pycspr
 from pycspr.types.node.rpc import DeployOfStoredContractByHashVersioned, DeployArgument
@@ -126,10 +128,9 @@ async def main():
         print("[😴] AI AGENT: Market state is identical to current contract parameters. Skipping deployment to save gas.")
         return
 
-    KEY_PATH = os.getenv("CASPER_PRIVATE_KEY_PATH")
-    if not KEY_PATH or not os.path.exists(KEY_PATH):
-        print("[-] Error: Could not find Admin secret_key.pem.")
-        return
+    KEY_PATH = os.getenv("PRIVATE_KEY_PATH", "./private_key.pem")
+    if not os.path.exists(KEY_PATH):
+        raise FileNotFoundError("Private key not found at specified path. If on Render, ensure Secret File is mounted correctly.")
 
     keypair = pycspr.parse_private_key(KEY_PATH, KeyAlgorithm.SECP256K1.name)
     contract_hash = os.environ.get("DERISK_CONTRACT_HASH")
@@ -202,9 +203,26 @@ async def main():
     print("[-] Failed to broadcast after 10 attempts.")
 
 
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"AI Sentinel is awake and monitoring.")
+
+def keep_alive_server():
+    # Render dynamically assigns a PORT environment variable
+    port = int(os.environ.get('PORT', 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
 # ── 4. 24/7 IMMORTAL SENTINEL WRAPPER ─────────────────────────────────
 async def run_sentinel():
     print("\n[🚀] INITIALIZING DERISK Vault 24/7 SENTINEL...")
+    
+    # Start the dummy server in a background thread to satisfy Render's port requirement
+    threading.Thread(target=keep_alive_server, daemon=True).start()
+    
     while True:
         try:
             print("\n" + "="*60)
