@@ -9,7 +9,9 @@ import { VaultForm } from '@/app/components/dashboard/VaultForm';
 import { SentinelFeed } from '@/app/components/dashboard/SentinelFeed';
 import * as CasperSDK_Raw from 'casper-js-sdk';
 
-// Bypass TS definition mismatches by casting the module to any
+// Robust runtime check to handle variations in production bundling environments
+const sdkTarget = (CasperSDK_Raw as any).default || CasperSDK_Raw;
+
 const { 
   CLPublicKey, 
   DeployUtil, 
@@ -17,7 +19,7 @@ const {
   CLValueBuilder, 
   decodeBase16, 
   CasperClient 
-} = CasperSDK_Raw as any;
+} = sdkTarget as any;
 
 const REFRESH_SECONDS = 10;
 
