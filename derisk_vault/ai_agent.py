@@ -206,11 +206,23 @@ async def main():
 import json
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
+    def _send_cors_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type')
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self._send_cors_headers()
+        self.end_headers()
+
     def do_GET(self):
-        if self.path == '/logs':
-            self.send_response(200)
+        self.send_response(200)
+        self._send_cors_headers()
+
+        # Use startswith to safely handle cache-busting query parameters like ?t=123
+        if self.path.startswith('/logs'):
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             try:
                 with open('audit_logs.json', 'rb') as f:
@@ -218,7 +230,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             except FileNotFoundError:
                 self.wfile.write(b"[]")
         else:
-            self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
             self.wfile.write(b"AI Sentinel is awake and monitoring.")
