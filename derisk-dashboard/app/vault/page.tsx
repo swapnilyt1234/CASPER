@@ -7,8 +7,17 @@ import { Header } from '@/app/components/dashboard/Header';
 import { StatusCards } from '@/app/components/dashboard/StatusCards';
 import { VaultForm } from '@/app/components/dashboard/VaultForm';
 import { SentinelFeed } from '@/app/components/dashboard/SentinelFeed';
-import CasperSDK from 'casper-js-sdk';
-const { CLPublicKey, DeployUtil, RuntimeArgs, CLValueBuilder, decodeBase16, CasperClient } = CasperSDK;
+import * as CasperSDK_Raw from 'casper-js-sdk';
+
+// Bypass TS definition mismatches by casting the module to any
+const { 
+  CLPublicKey, 
+  DeployUtil, 
+  RuntimeArgs, 
+  CLValueBuilder, 
+  decodeBase16, 
+  CasperClient 
+} = CasperSDK_Raw as any;
 
 const REFRESH_SECONDS = 10;
 
