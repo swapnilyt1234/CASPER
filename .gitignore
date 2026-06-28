@@ -23,3 +23,8 @@ build/
 .pytest_cache/
 .coverage
 .DS_Store
+
+# Large binaries / toolchain
+binaryen-version_*/
+*.tar.gz
+*.a
