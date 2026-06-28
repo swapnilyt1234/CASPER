@@ -233,6 +233,20 @@ def keep_alive_server():
 async def run_sentinel():
     print("\n[🚀] INITIALIZING DERISK Vault 24/7 SENTINEL...")
     
+    # Seed the ephemeral disk with a boot log
+    if not os.path.exists("audit_logs.json"):
+        boot_log = [{
+            "action": "System Initialization (Online)",
+            "status": "Success",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "rate": 5,
+            "halted": False,
+            "cost": "0.00 CSPR",
+            "deployHash": "System Boot"
+        }]
+        with open("audit_logs.json", "w") as f:
+            json.dump(boot_log, f, indent=4)
+
     # Start the dummy server in a background thread to satisfy Render's port requirement
     threading.Thread(target=keep_alive_server, daemon=True).start()
     

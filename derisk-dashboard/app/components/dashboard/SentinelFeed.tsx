@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { AlertOctagon, Cpu, ExternalLink, Settings2, ShieldAlert, XCircle, CheckCircle2 } from 'lucide-react';
 import { AuditLog } from '@/utils/casper-server';
 
@@ -68,7 +69,25 @@ function Stat({
   );
 }
 
-export function SentinelFeed({ logs }: { logs: AuditLog[] }) {
+export function SentinelFeed() {
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const res = await fetch(`https://casper-hack.onrender.com/logs?t=${Date.now()}`);
+        if (res.ok) {
+          const data = await res.json();
+          setLogs(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch logs:", err);
+      }
+    };
+    fetchLogs();
+    const t = setInterval(fetchLogs, 10000);
+    return () => clearInterval(t);
+  }, []);
   return (
     <div className="rounded-2xl border border-border bg-card overflow-hidden">
       <div className="flex items-center justify-between px-6 py-5 border-b border-border">

@@ -272,7 +272,7 @@ export default function VaultDashboard() {
           </div>
           <div className="lg:col-span-3">
             {walletAddress ? (
-              <SentinelFeed logs={auditLogs} />
+              <SentinelFeed />
             ) : (
               // Disconnected placeholder — mounts SentinelFeed only after wallet connect
               <div className="rounded-2xl border border-border bg-card overflow-hidden flex flex-col items-center justify-center py-20 gap-4">
