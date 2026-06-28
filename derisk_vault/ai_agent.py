@@ -203,12 +203,25 @@ async def main():
     print("[-] Failed to broadcast after 10 attempts.")
 
 
+import json
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"AI Sentinel is awake and monitoring.")
+        if self.path == '/logs':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            try:
+                with open('audit_logs.json', 'rb') as f:
+                    self.wfile.write(f.read())
+            except FileNotFoundError:
+                self.wfile.write(b"[]")
+        else:
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"AI Sentinel is awake and monitoring.")
 
 def keep_alive_server():
     # Render dynamically assigns a PORT environment variable
