@@ -74,19 +74,22 @@ export function SentinelFeed() {
 
   useEffect(() => {
     const fetchLogs = async () => {
-      try {
-        const res = await fetch(`https://casper-hack.onrender.com/logs?t=${Date.now()}`);
-        if (res.ok) {
-          const data = await res.json();
-          setLogs(data);
+        try {
+            const res = await fetch(`https://casper-hack.onrender.com/logs?t=${Date.now()}`);
+            if (res.ok) {
+                const data = await res.json();
+                console.log("Render API Data:", data); // Debugging line
+                // Ensure we are setting an array even if the API returns a nested object by accident
+                setLogs(Array.isArray(data) ? data : []); 
+            }
+        } catch (error) {
+            console.error("Failed to fetch Sentinel logs:", error);
         }
-      } catch (err) {
-        console.error("Failed to fetch logs:", err);
-      }
     };
+
     fetchLogs();
-    const t = setInterval(fetchLogs, 10000);
-    return () => clearInterval(t);
+    const interval = setInterval(fetchLogs, 10000);
+    return () => clearInterval(interval);
   }, []);
   return (
     <div className="rounded-2xl border border-border bg-card overflow-hidden">
